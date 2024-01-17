@@ -1,0 +1,242 @@
+From a183c18a4f8a3b402a0f6bab9cec864861eceb4f Mon Sep 17 00:00:00 2001
+From: Petr Novak <petr.novak@e-smartsystems.com>
+Date: Sun, 7 Jan 2024 17:46:37 +0100
+Subject: [PATCH] Edit DTS for I2C speed, show I2C speed, HUK debug
+
+---
+ core/arch/arm/dts/stm32mp157c-dk2.dts         |  3 +++
+ core/drivers/crypto/se050/adaptors/apis/sss.c | 24 +++++++++++++++----
+ core/drivers/crypto/se050/core/scp03.c        |  7 +++++-
+ core/drivers/crypto/se050/glue/i2c_stm32.c    |  4 ++--
+ core/drivers/stm32mp15_huk.c                  | 13 ++++++++++
+ lib/libutils/ext/trace.c                      | 16 -------------
+ 6 files changed, 43 insertions(+), 24 deletions(-)
+
+diff --git a/core/arch/arm/dts/stm32mp157c-dk2.dts b/core/arch/arm/dts/stm32mp157c-dk2.dts
+index 834e1849f..133b937b5 100644
+--- a/core/arch/arm/dts/stm32mp157c-dk2.dts
++++ b/core/arch/arm/dts/stm32mp157c-dk2.dts
+@@ -77,6 +77,9 @@
+ };
+ 
+ &i2c5 {
++	i2c-scl-rising-time-ns = <100>;
++        i2c-scl-falling-time-ns = <20>;
++        clock-frequency = <1000000>;
+ 	status = "okay";
+ };
+ &i2c1 {
+diff --git a/core/drivers/crypto/se050/adaptors/apis/sss.c b/core/drivers/crypto/se050/adaptors/apis/sss.c
+index 432828e12..43217d76f 100644
+--- a/core/drivers/crypto/se050/adaptors/apis/sss.c
++++ b/core/drivers/crypto/se050/adaptors/apis/sss.c
+@@ -63,11 +63,13 @@ sss_status_t se050_rotate_scp03_keys(struct sss_se05x_ctx *ctx)
+ 
+ 	if (IS_ENABLED(CFG_CORE_SE05X_SCP03_PROVISION_WITH_FACTORY_KEYS)) {
+ 		/* Public */
++		IMSG("CFG_CORE_SE05X_SCP03_PROVISION_WITH_FACTORY_KEY is set");
+ 		status = se050_scp03_get_keys(&new_keys, SCP03_OFID);
+ 		if (status != kStatus_SSS_Success)
+ 			return status;
+ 	} else {
+ 		/* Secret */
++		IMSG("CFG_CORE_SE05X_SCP03_PROVISION_WITH_FACTORY_KEY is not set, using derived keys");
+ 		status = se050_scp03_subkey_derive(&new_keys);
+ 		if (status != kStatus_SSS_Success)
+ 			return status;
+@@ -77,7 +79,7 @@ sss_status_t se050_rotate_scp03_keys(struct sss_se05x_ctx *ctx)
+ 	if (status != kStatus_SSS_Success)
+ 		return status;
+ 
+-	if (IS_ENABLED(CFG_CORE_SE05X_DISPLAY_SCP03_KEYS)) {
++	if (1 || IS_ENABLED(CFG_CORE_SE05X_DISPLAY_SCP03_KEYS)) {
+ 		IMSG("scp03: current keys");
+ 		nLog_au8("scp03", 0xff, "dek: ",
+ 			 cur_keys.dek, SE050_SCP03_KEY_SZ);
+@@ -96,8 +98,10 @@ sss_status_t se050_rotate_scp03_keys(struct sss_se05x_ctx *ctx)
+ 
+ 	if (!memcmp(new_keys.enc, cur_keys.enc, SE050_SCP03_KEY_SZ) &&
+ 	    !memcmp(new_keys.mac, cur_keys.mac, SE050_SCP03_KEY_SZ) &&
+-	    !memcmp(new_keys.dek, cur_keys.dek, SE050_SCP03_KEY_SZ))
++	    !memcmp(new_keys.dek, cur_keys.dek, SE050_SCP03_KEY_SZ)) {
++		IMSG("retun success as old and new keys are the same");
+ 		return kStatus_SSS_Success;
++	}
+ 
+ 	connect_ctx = &ctx->open_ctx;
+ 	session = &ctx->session;
+@@ -153,18 +157,23 @@ sss_status_t se050_enable_scp03(sss_se05x_session_t *session)
+ 		SCP03_OFID };
+ 	size_t i = 0;
+ 
+-	if (se050_scp03_enabled())
++	if (se050_scp03_enabled()) {
++		IMSG("SCP03 is already eabled");
+ 		return kStatus_SSS_Success;
++	}
+ 
+ 	for (i = 0; i < ARRAY_SIZE(key_src); i++) {
+ 		status = se050_scp03_get_keys(&keys, key_src[i]);
+-		if (status != kStatus_SSS_Success)
++		if (status != kStatus_SSS_Success) {
++			IMSG("scp03_get_keys %u failed", i);
+ 			continue;
++		}
+ 
+ 		if (session->subsystem)
+ 			sss_se05x_session_close(session);
+ 
+ 		if (!se050_core_early_init(&keys)) {
++			IMSG("Calling se050_scp03_set_enable %u", i);
+ 			se050_scp03_set_enable(key_src[i]);
+ 			goto out;
+ 		}
+@@ -174,8 +183,12 @@ sss_status_t se050_enable_scp03(sss_se05x_session_t *session)
+ 
+ 	return kStatus_SSS_Fail;
+ out:
+-	if (IS_ENABLED(CFG_CORE_SE05X_SCP03_PROVISION_ON_INIT))
++	if (IS_ENABLED(CFG_CORE_SE05X_SCP03_PROVISION_ON_INIT)) {
++		IMSG("SCP03 call rotate keys dues to CFG_CORE_SE05X_SCP03_PROVISION_ON_INIT");
+ 		return se050_rotate_scp03_keys(&se050_ctx);
++	} else {
++		IMSG("CFG_CORE_SE05X_SCP03_PROVISION_ON_INIT is not set");
++	}
+ 
+ 	return kStatus_SSS_Success;
+ }
+@@ -196,6 +209,7 @@ sss_status_t se050_session_open(struct sss_se05x_ctx *ctx,
+ 	connect_ctx->portName = NULL;
+ 
+ 	if (!current_keys) {
++		IMSG("No current_keys, open plain");
+ 		return sss_se05x_session_open(session, kType_SSS_SE_SE05x, 0,
+ 					      kSSS_ConnectionType_Plain,
+ 					      connect_ctx);
+diff --git a/core/drivers/crypto/se050/core/scp03.c b/core/drivers/crypto/se050/core/scp03.c
+index 153e5c86d..6106976bb 100644
+--- a/core/drivers/crypto/se050/core/scp03.c
++++ b/core/drivers/crypto/se050/core/scp03.c
+@@ -17,14 +17,19 @@ TEE_Result crypto_se_enable_scp03(bool rotate_keys)
+ 		return TEE_ERROR_GENERIC;
+ 
+ 	if (rotate_keys) {
++		IMSG("rotate_keys requested");
+ 		if (IS_ENABLED(CFG_CORE_SE05X_SCP03_PROVISION)) {
++			IMSG("CFG_CORE_SE05X_SCP03_PROVISION");
+ 			status = se050_rotate_scp03_keys(&se050_ctx);
+ 			if (status != kStatus_SSS_Success)
+ 				return TEE_ERROR_GENERIC;
+ 
+ 			return TEE_SUCCESS;
++		} else {
++			IMSG("CFG_CORE_SE05X_SCP03_PROVISION is not enabled");
+ 		}
+ 		return TEE_ERROR_BAD_PARAMETERS;
+-	}
++	} else 
++		IMSG("rotate_keys not requested");
+ 	return TEE_SUCCESS;
+ }
+diff --git a/core/drivers/crypto/se050/glue/i2c_stm32.c b/core/drivers/crypto/se050/glue/i2c_stm32.c
+index fb2ad6b8d..d232a13ad 100644
+--- a/core/drivers/crypto/se050/glue/i2c_stm32.c
++++ b/core/drivers/crypto/se050/glue/i2c_stm32.c
+@@ -57,9 +57,9 @@ static int dt_i2c_bus_config(struct stm32_i2c_init_s *init,
+ 
+ 	cuint = fdt_getprop(fdt, node, "clock-frequency", NULL);
+ 	if (cuint && fdt32_to_cpu(*cuint) != CFG_CORE_SE05X_BAUDRATE)
+-		IMSG("SE05X ignoring CFG_CORE_SE05X_BAUDRATE, use DTB");
++		IMSG("SE05X ignoring CFG_CORE_SE05X_BAUDRATE=%u, use DTB=%u\n", CFG_CORE_SE05X_BAUDRATE, fdt32_to_cpu(*cuint));
+ 	else if (I2C_STANDARD_RATE != CFG_CORE_SE05X_BAUDRATE)
+-		IMSG("SE05x ignoring CFG_CORE_SE05X_BAUDRATE, use built-in");
++		IMSG("SE05x ignoring CFG_CORE_SE05X_BAUDRATE=%u, use built-in %u\n", CFG_CORE_SE05X_BAUDRATE, fdt32_to_cpu(*cuint));
+ 
+ 	return stm32_i2c_get_setup_from_fdt(fdt, node, init, pctrl, pcnt);
+ }
+diff --git a/core/drivers/stm32mp15_huk.c b/core/drivers/stm32mp15_huk.c
+index 761422764..cfc567cba 100644
+--- a/core/drivers/stm32mp15_huk.c
++++ b/core/drivers/stm32mp15_huk.c
+@@ -100,6 +100,11 @@ static TEE_Result aes_gcm_encrypt_uid(uint8_t *key, size_t key_len,
+ 	if (ret)
+ 		goto out;
+ 
++	IMSG("STM32MP15 UID: ");
++	dhex_dump(__func__, __LINE__, TRACE_INFO, uid, sizeof(uid));
++	IMSG("STM32MP15 OTP KEY: ");
++	dhex_dump(__func__, __LINE__, TRACE_INFO, key, key_len);
++
+ 	ret = crypto_authenc_alloc_ctx(&ctx, TEE_ALG_AES_GCM);
+ 	if (ret)
+ 		goto out;
+@@ -138,6 +143,7 @@ static __maybe_unused TEE_Result pos_from_dt(uint32_t otp_id[HUK_NB_OTP])
+ 	if (tmp != (HW_UNIQUE_KEY_LENGTH * CHAR_BIT))
+ 		return TEE_ERROR_SECURITY;
+ 
++	IMSG("CFG_STM32_HUK_FROM_DT: %u\n", otp_start);
+ 	for (i = 0; i < HUK_NB_OTP; i++)
+ 		otp_id[i] = otp_start + i;
+ 
+@@ -160,6 +166,7 @@ static TEE_Result get_otp_pos(uint32_t otp_id[HUK_NB_OTP])
+ 	otp_id[2] = CFG_STM32MP15_HUK_BSEC_KEY_2;
+ 	otp_id[3] = CFG_STM32MP15_HUK_BSEC_KEY_3;
+ 
++	IMSG("not CFG_STM32_HUK_FROM_DT\n");
+ 	return TEE_SUCCESS;
+ #endif /* CFG_STM32_HUK_FROM_DT */
+ }
+@@ -186,16 +193,22 @@ TEE_Result tee_otp_get_hw_unique_key(struct tee_hw_unique_key *hwkey)
+ 
+ 	if (IS_ENABLED(CFG_STM32MP15_HUK_BSEC_KEY)) {
+ 		static_assert(sizeof(otp_key) == HW_UNIQUE_KEY_LENGTH);
++		IMSG("CFG_STM32MP15_HUK_BSEC_KEY\n");
+ 		memcpy(hwkey->data, otp_key, HW_UNIQUE_KEY_LENGTH);
+ 		ret = TEE_SUCCESS;
+ 		goto out;
+ 	}
+ 
+ 	if (IS_ENABLED(CFG_STM32MP15_HUK_BSEC_DERIVE_UID)) {
++		IMSG("CFG_STM32MP15_HUK_BSEC_DERIVE_UID\n");
+ 		ret = aes_gcm_encrypt_uid((uint8_t *)otp_key, len, hwkey->data,
+ 					  &len);
+ 		if (len != HW_UNIQUE_KEY_LENGTH)
+ 			ret = TEE_ERROR_GENERIC;
++
++		IMSG("HUK: ");
++		dhex_dump(__func__, __LINE__, TRACE_INFO, hwkey->data, len);
++
+ 		goto out;
+ 	}
+ 
+diff --git a/lib/libutils/ext/trace.c b/lib/libutils/ext/trace.c
+index 33c099d2c..fa20edd5a 100644
+--- a/lib/libutils/ext/trace.c
++++ b/lib/libutils/ext/trace.c
+@@ -201,7 +201,6 @@ void trace_printf(const char *function __unused, int line __unused,
+ 
+ #endif
+ 
+-#if (TRACE_LEVEL >= TRACE_DEBUG)
+ struct strbuf {
+ 	char buf[MAX_PRINT_SIZE];
+ 	char *ptr;
+@@ -272,18 +271,3 @@ void dhex_dump(const char *function, int line, int level,
+ err:
+ 	DMSG("Hex dump error");
+ }
+-#else
+-
+-/*
+- * In case we have trace level less than debug when compiling optee_os, we have
+- * to add stubs to trace functions in case they are used with TA having a
+- * a higher trace level
+- */
+-
+-void dhex_dump(const char *function __unused, int line __unused,
+-	       int level __unused,
+-	       const void *buf __unused, int len __unused)
+-{
+-}
+-
+-#endif
